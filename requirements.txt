@@ -1,0 +1,9 @@
+# Dependencias para EstadisticaHospital.py
+# Instalar con: pip install -r requirements.txt
+
+pandas>=1.5.0
+openpyxl>=3.0.0
+playwright>=1.40.0
+
+# Para crear el ejecutable:
+# pip install pyinstaller

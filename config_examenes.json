@@ -1,0 +1,44 @@
+{
+    "_comentario": "Archivo de configuración para multiplicadores y categorías de exámenes",
+    "_instrucciones": "Edite este archivo para agregar nuevos exámenes o cambiar categorías",
+    
+    "multipliers": {
+        "BIOMETRÍA HEMÁTICA": 18,
+        "COPROPARASITARIO": 2,
+        "ELEMENTAL Y MICROSCÓPICO DE ORINA": 3,
+        "GASOMETRIA ARTERIAL": 14,
+        "GASOMETRIA VENOSA": 14,
+        "TIPIFICACION SANGUINEA RH (D)": 3
+    },
+    
+    "cultivo_multiplier": 10,
+    
+    "exam_categories": {
+        "_comentario": "Categorías basadas en nombre de examen (tienen prioridad)",
+        "LEISHMANIA": "Hematologico",
+        "CRISTALOGRAFÍA": "Bacteriológico",
+        "GRAM (GOTA FRESCA) ORINA": "Bacteriológico",
+        "GASOMETRIA ARTERIAL": "Quimica sanguinea",
+        "GASOMETRIA VENOSA": "Quimica sanguinea"
+    },
+    
+    "seccion_categories": {
+        "_comentario": "Categorías basadas en sección (se usan si el examen no tiene categoría específica)",
+        "Autoinmunes e Infecciosas": "Serologicos",
+        "Drogas y Fármacos": "Serologicos",
+        "Serología": "Serologicos",
+        "Bioquímica": "Quimica sanguinea",
+        "Electrolitos": "Quimica sanguinea",
+        "Inmunoquímica Sanguínea": "Quimica sanguinea",
+        "Química Clínica en Orina": "Quimica sanguinea",
+        "Uroanálisis": "Orina",
+        "Coproanálisis": "Materias fecales",
+        "Biología Molecular": "Hormonales",
+        "Estudios Hormonales": "Hormonales",
+        "Marcadores Tumorales": "Hormonales",
+        "Coagulación": "Hematologico",
+        "Hematología": "Hematologico",
+        "Inmunohematología": "Hematologico",
+        "Microbiología": "Bacteriológico"
+    }
+}

@@ -1,0 +1,36 @@
+# Excel files (user data)
+ExcelsDescargados/*.xlsx
+Estadistica Hospital.xlsx
+
+# Browser data (cookies, passwords, cache)
+browser_data/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows
+Thumbs.db
+desktop.ini
+*.log
+
+# Temporary
+*.tmp
+~$*
