@@ -9,7 +9,7 @@ REM
 REM El ejecutable resultante requiere que Chrome esté
 REM instalado en la computadora destino.
 REM
-REM Tamaño aproximado del .exe: 50-80 MB
+REM Tamaño aproximado del .exe: 80-120 MB
 REM ============================================
 
 echo.
@@ -37,21 +37,51 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-REM Paso 2: Instalar Playwright (solo el driver, no los navegadores)
-echo [2/3] Configurando Playwright...
-playwright install-deps >nul 2>nul
+REM Paso 2: Limpiar builds anteriores
+echo [2/3] Limpiando builds anteriores...
+if exist "build" rmdir /s /q build
+if exist "dist" rmdir /s /q dist
+if exist "*.spec" del /q *.spec
 
-REM Paso 3: Compilar con PyInstaller
-echo [3/3] Compilando ejecutable (esto puede tomar unos minutos)...
+REM Paso 3: Compilar con PyInstaller (excluyendo paquetes innecesarios)
+echo [3/3] Compilando ejecutable (esto puede tomar 2-5 minutos)...
+echo      Excluyendo librerias innecesarias para reducir tamano...
 
 pyinstaller --onefile ^
     --windowed ^
     --name "EstadisticaHospital" ^
-    --add-data "config.ini;." ^
-    --add-data "config_examenes.json;." ^
-    --hidden-import "playwright.sync_api" ^
-    --hidden-import "playwright._impl" ^
-    --collect-submodules "playwright" ^
+    --exclude-module torch ^
+    --exclude-module torchvision ^
+    --exclude-module torchaudio ^
+    --exclude-module tensorflow ^
+    --exclude-module keras ^
+    --exclude-module scipy ^
+    --exclude-module matplotlib ^
+    --exclude-module IPython ^
+    --exclude-module jupyter ^
+    --exclude-module notebook ^
+    --exclude-module PIL ^
+    --exclude-module cv2 ^
+    --exclude-module sklearn ^
+    --exclude-module sympy ^
+    --exclude-module bokeh ^
+    --exclude-module plotly ^
+    --exclude-module seaborn ^
+    --exclude-module networkx ^
+    --exclude-module pygments ^
+    --exclude-module jedi ^
+    --exclude-module parso ^
+    --exclude-module zmq ^
+    --exclude-module tornado ^
+    --exclude-module nbformat ^
+    --exclude-module nbconvert ^
+    --exclude-module jsonschema ^
+    --exclude-module lark ^
+    --exclude-module triton ^
+    --exclude-module fsspec ^
+    --exclude-module win32com ^
+    --exclude-module pythoncom ^
+    --exclude-module pywintypes ^
     EstadisticaHospital.py
 
 echo.
@@ -60,8 +90,13 @@ if exist "dist\EstadisticaHospital.exe" (
     echo  [OK] Compilacion exitosa!
     echo.
     echo  Archivo: dist\EstadisticaHospital.exe
-    echo  Tamano:  
-    for %%A in ("dist\EstadisticaHospital.exe") do echo           %%~zA bytes
+    for %%A in ("dist\EstadisticaHospital.exe") do (
+        set size=%%~zA
+        setlocal enabledelayedexpansion
+        set /a sizeMB=!size! / 1048576
+        echo  Tamano:  !sizeMB! MB
+        endlocal
+    )
     echo.
     echo  IMPORTANTE: 
     echo  - El .exe requiere Chrome instalado en el destino
