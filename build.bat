@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo   Building Estadistica Hospital v3.6.1
+echo   Building Estadistica Hospital v3.6.2
 echo ========================================
 echo.
 
@@ -27,8 +27,5 @@ echo.
 echo ========================================
 echo   Build complete!
 echo   Executable: dist\EstadisticaHospital.exe
-echo.
-echo   NOTE: The app creates config files
-echo   automatically on first run.
 echo ========================================
 pause

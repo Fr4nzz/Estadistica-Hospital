@@ -159,7 +159,7 @@ CATEGORY_ORDER = [
 class EstadisticaHospitalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Estadística Hospital v3.6.1")
+        self.root.title("Estadística Hospital v3.6.2")
         self.root.geometry("950x750")
         self.root.minsize(900, 650)
         
@@ -1606,13 +1606,31 @@ class EstadisticaHospitalApp:
                     self.log(f"📥 Procesando día {day_index + 1}/{total_days}: {current_date_str}")
                     
                     try:
-                        # Establecer fechas
-                        page.evaluate(f"""
-                            document.getElementById('{id_fecha_desde}').value = '{current_date_str}';
-                            document.getElementById('{id_fecha_hasta}').value = '{current_date_str}';
-                            document.getElementById('{id_fecha_desde}').dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            document.getElementById('{id_fecha_hasta}').dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        """)
+                        # Establecer fechas - Ctrl+A para seleccionar todo, luego escribir
+                        fecha_desde = page.locator(f"#{id_fecha_desde}")
+                        fecha_hasta = page.locator(f"#{id_fecha_hasta}")
+                        
+                        # Fecha desde: click, Ctrl+A, escribir, Tab
+                        fecha_desde.click()
+                        page.keyboard.press("Control+a")
+                        page.keyboard.type(current_date_str, delay=20)
+                        page.keyboard.press("Tab")
+                        
+                        # Fecha hasta: click, Ctrl+A, escribir, Tab
+                        fecha_hasta.click()
+                        page.keyboard.press("Control+a")
+                        page.keyboard.type(current_date_str, delay=20)
+                        page.keyboard.press("Tab")
+                        
+                        # Espera para que Vue procese
+                        time.sleep(0.3)
+                        
+                        # Verificar que las fechas se establecieron correctamente
+                        actual_desde = fecha_desde.input_value()
+                        actual_hasta = fecha_hasta.input_value()
+                        
+                        if actual_desde != current_date_str or actual_hasta != current_date_str:
+                            self.log(f"   ⚠️ Fechas no coinciden: desde={actual_desde}, hasta={actual_hasta}")
                         
                         # Configurar dropdown (solo primer día)
                         if day_index == 0:
@@ -1627,27 +1645,22 @@ class EstadisticaHospitalApp:
                             except Exception as e:
                                 self.log(f"   ⚠️ Error seleccionando dropdown: {e}")
                         
-                        # SIEMPRE hacer clic en "Generar informe" para refrescar datos con la nueva fecha
-                        generar_btn = page.query_selector("button:has-text('Generar informe')")
-                        if generar_btn:
-                            generar_btn.click()
-                            # Esperar a que aparezca el enlace Excel (indica que los datos se cargaron)
-                            try:
-                                page.wait_for_selector("a:has-text('Excel')", timeout=10000)
-                            except:
-                                pass
-                            # Pequeña espera adicional para asegurar que los datos estén listos
-                            time.sleep(0.5)
+                        # Hacer clic en "Generar informe" para refrescar datos
+                        generar_btn = page.locator("button:has-text('Generar informe')").first
+                        generar_btn.click()
                         
-                        # Buscar Excel link
-                        excel_link = page.query_selector("a:has-text('Excel'):visible")
+                        # Esperar a que aparezca el menú dropdown con Excel
+                        try:
+                            page.wait_for_selector("a:has-text('Excel')", timeout=15000)
+                        except:
+                            self.log(f"   ⚠️ No apareció el enlace Excel")
                         
-                        if not excel_link:
-                            excel_link = page.query_selector(".dropdown-menu >> text=Excel")
-                        if not excel_link:
-                            excel_link = page.query_selector("text=Excel")
+                        time.sleep(0.2)
                         
-                        if excel_link:
+                        # Buscar y hacer clic en Excel
+                        excel_link = page.locator("a:has-text('Excel')").first
+                        
+                        if excel_link.count() > 0:
                             with page.expect_download(timeout=30000) as download_info:
                                 excel_link.click()
                             
