@@ -159,7 +159,7 @@ CATEGORY_ORDER = [
 class EstadisticaHospitalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Estadística Hospital v3.6.2")
+        self.root.title("Estadística Hospital v3.6.3")
         self.root.geometry("950x750")
         self.root.minsize(900, 650)
         
@@ -323,9 +323,10 @@ class EstadisticaHospitalApp:
         # Fecha inicial
         ttk.Label(params_frame, text="Fecha inicial:").grid(row=0, column=0, sticky="w", padx=5, pady=8)
         
-        # Calcular primer día del mes actual
+        # Calcular primer día del mes actual y ayer
         today = date.today()
-        first_day = date(today.year, today.month, 1)
+        yesterday = today - timedelta(days=1)
+        first_day = date(yesterday.year, yesterday.month, 1)
         
         if HAS_TKCALENDAR:
             self.start_date_entry = DateEntry(params_frame, width=15, date_pattern='yyyy-mm-dd',
@@ -339,16 +340,16 @@ class EstadisticaHospitalApp:
             ttk.Button(params_frame, text="📅", width=3, 
                       command=lambda: self.show_calendar_popup(self.start_date_var)).grid(row=0, column=2, padx=2)
         
-        # Fecha final
+        # Fecha final (ayer)
         ttk.Label(params_frame, text="Fecha final:").grid(row=0, column=3, sticky="w", padx=(20, 5), pady=8)
         
         if HAS_TKCALENDAR:
             self.end_date_entry = DateEntry(params_frame, width=15, date_pattern='yyyy-mm-dd',
-                                            font=("Segoe UI", 11), year=today.year,
-                                            month=today.month, day=today.day)
+                                            font=("Segoe UI", 11), year=yesterday.year,
+                                            month=yesterday.month, day=yesterday.day)
             self.end_date_entry.grid(row=0, column=4, sticky="w", padx=5, pady=8)
         else:
-            self.end_date_var = tk.StringVar(value=today.strftime('%Y-%m-%d'))
+            self.end_date_var = tk.StringVar(value=yesterday.strftime('%Y-%m-%d'))
             end_entry = ttk.Entry(params_frame, textvariable=self.end_date_var, width=15)
             end_entry.grid(row=0, column=4, sticky="w", padx=5, pady=8)
             ttk.Button(params_frame, text="📅", width=3,
@@ -361,7 +362,7 @@ class EstadisticaHospitalApp:
         ttk.Label(quick_frame, text="Rápido:").pack(side="left", padx=(0, 10))
         ttk.Button(quick_frame, text="Este mes", command=self.set_this_month).pack(side="left", padx=2)
         ttk.Button(quick_frame, text="Mes anterior", command=self.set_last_month).pack(side="left", padx=2)
-        ttk.Button(quick_frame, text="Hoy", command=self.set_today).pack(side="left", padx=2)
+        ttk.Button(quick_frame, text="Ayer", command=self.set_today).pack(side="left", padx=2)
         
         # Headless mode
         self.headless_var = tk.BooleanVar(value=self.config.get("General", "Headless", fallback="false").lower() == "true")
@@ -447,10 +448,11 @@ class EstadisticaHospitalApp:
             self.end_date_var.set(end.strftime('%Y-%m-%d'))
     
     def set_this_month(self):
-        """Establece las fechas para el mes actual"""
+        """Establece las fechas para el mes actual (hasta ayer)"""
         today = date.today()
-        first_day = date(today.year, today.month, 1)
-        self.set_date(first_day, today)
+        yesterday = today - timedelta(days=1)
+        first_day = date(yesterday.year, yesterday.month, 1)
+        self.set_date(first_day, yesterday)
     
     def set_last_month(self):
         """Establece las fechas para el mes anterior"""
@@ -464,9 +466,9 @@ class EstadisticaHospitalApp:
         self.set_date(first_day_prev, last_day_prev)
     
     def set_today(self):
-        """Establece las fechas para hoy"""
-        today = date.today()
-        self.set_date(today, today)
+        """Establece las fechas para ayer"""
+        yesterday = date.today() - timedelta(days=1)
+        self.set_date(yesterday, yesterday)
     
     def show_calendar_popup(self, date_var):
         """Muestra un popup de calendario simple (fallback si no hay tkcalendar)"""
