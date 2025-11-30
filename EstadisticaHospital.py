@@ -49,11 +49,20 @@ except ImportError:
 # CONFIGURACIÓN POR DEFECTO
 # ============================================
 
+# Browser options supported by Playwright
+BROWSER_OPTIONS = {
+    "chrome": {"name": "Google Chrome", "type": "chromium", "channel": "chrome"},
+    "msedge": {"name": "Microsoft Edge", "type": "chromium", "channel": "msedge"},
+    "firefox": {"name": "Mozilla Firefox", "type": "firefox", "channel": None},
+    "chromium": {"name": "Chromium", "type": "chromium", "channel": None},
+}
+
 DEFAULT_CONFIG = {
     "General": {
         "URL": "https://hjmvi.orion-labs.com/informes/estadisticos",
         "URLCatalogo": "https://hjmvi.orion-labs.com/informes/catalogos",
-        "Headless": "false"
+        "Headless": "false",
+        "Browser": "chrome"
     },
     "Informe": {
         "IdDropdownAgrupar": "agrupar-por",
@@ -297,7 +306,69 @@ class EstadisticaHospitalApp:
         }
         with open(catalog_file, 'w', encoding='utf-8') as f:
             json.dump(catalog, f, indent=2, ensure_ascii=False)
-    
+
+    def launch_browser(self, playwright, browser_data_folder: Path, headless: bool = False, accept_downloads: bool = True):
+        """
+        Lanza el navegador según la configuración seleccionada.
+        Soporta Chrome, Microsoft Edge, Firefox y Chromium.
+
+        Args:
+            playwright: Instancia de sync_playwright
+            browser_data_folder: Carpeta para datos persistentes del navegador
+            headless: Si se ejecuta en modo sin ventana
+            accept_downloads: Si se aceptan descargas
+
+        Returns:
+            Contexto del navegador (BrowserContext)
+        """
+        browser_key = self.config.get("General", "Browser", fallback="chrome")
+        if browser_key not in BROWSER_OPTIONS:
+            browser_key = "chrome"
+
+        browser_config = BROWSER_OPTIONS[browser_key]
+        browser_type = browser_config["type"]
+        channel = browser_config["channel"]
+        browser_name = browser_config["name"]
+
+        self.log(f"Iniciando navegador {browser_name}...")
+        self.log("   Los datos de sesion se guardaran para futuros usos")
+
+        # Common launch options
+        launch_options = {
+            "user_data_dir": str(browser_data_folder / browser_key),
+            "headless": headless,
+            "accept_downloads": accept_downloads,
+        }
+
+        # Add channel for Chrome/Edge
+        if channel:
+            launch_options["channel"] = channel
+
+        try:
+            if browser_type == "chromium":
+                context = playwright.chromium.launch_persistent_context(**launch_options)
+            elif browser_type == "firefox":
+                context = playwright.firefox.launch_persistent_context(**launch_options)
+            else:
+                # Fallback to chromium
+                launch_options["channel"] = "chrome"
+                context = playwright.chromium.launch_persistent_context(**launch_options)
+
+            return context
+        except Exception as e:
+            # If the selected browser fails, try Chrome as fallback
+            error_msg = str(e).lower()
+            if browser_key != "chrome" and ("not found" in error_msg or "executable" in error_msg or "channel" in error_msg):
+                self.log(f"No se pudo iniciar {browser_name}. Intentando con Chrome...")
+                fallback_options = {
+                    "user_data_dir": str(browser_data_folder / "chrome"),
+                    "headless": headless,
+                    "accept_downloads": accept_downloads,
+                    "channel": "chrome",
+                }
+                return playwright.chromium.launch_persistent_context(**fallback_options)
+            raise
+
     def create_notebook(self):
         """Crea el notebook con pestañas"""
         self.notebook = ttk.Notebook(self.root)
@@ -364,10 +435,43 @@ class EstadisticaHospitalApp:
         ttk.Button(quick_frame, text="Mes anterior", command=self.set_last_month).pack(side="left", padx=2)
         ttk.Button(quick_frame, text="Ayer", command=self.set_today).pack(side="left", padx=2)
         
+        # Browser selector
+        browser_frame = ttk.Frame(params_frame)
+        browser_frame.grid(row=2, column=0, columnspan=6, sticky="w", padx=5, pady=5)
+
+        ttk.Label(browser_frame, text="Navegador:").pack(side="left", padx=(0, 10))
+
+        # Get saved browser or default to chrome
+        saved_browser = self.config.get("General", "Browser", fallback="chrome")
+        if saved_browser not in BROWSER_OPTIONS:
+            saved_browser = "chrome"
+
+        self.browser_var = tk.StringVar(value=saved_browser)
+        browser_combo = ttk.Combobox(browser_frame, textvariable=self.browser_var,
+                                     values=list(BROWSER_OPTIONS.keys()), state="readonly", width=15)
+        browser_combo.pack(side="left", padx=5)
+
+        # Browser name display
+        self.browser_name_var = tk.StringVar(value=f"({BROWSER_OPTIONS[saved_browser]['name']})")
+        browser_name_label = ttk.Label(browser_frame, textvariable=self.browser_name_var,
+                                       font=("Segoe UI", 9, "italic"))
+        browser_name_label.pack(side="left", padx=5)
+
+        # Update browser name when selection changes
+        def on_browser_change(event=None):
+            browser = self.browser_var.get()
+            if browser in BROWSER_OPTIONS:
+                self.browser_name_var.set(f"({BROWSER_OPTIONS[browser]['name']})")
+                # Save to config
+                self.config.set("General", "Browser", browser)
+                self.save_config()
+
+        browser_combo.bind("<<ComboboxSelected>>", on_browser_change)
+
         # Headless mode
         self.headless_var = tk.BooleanVar(value=self.config.get("General", "Headless", fallback="false").lower() == "true")
-        ttk.Checkbutton(params_frame, text="Modo oculto (sin ventana del navegador)", 
-                       variable=self.headless_var).grid(row=2, column=0, columnspan=6, sticky="w", padx=5, pady=8)
+        ttk.Checkbutton(params_frame, text="Modo oculto (sin ventana del navegador)",
+                       variable=self.headless_var).grid(row=3, column=0, columnspan=6, sticky="w", padx=5, pady=8)
         
         # Frame de botones de descarga
         buttons_frame = ttk.Frame(self.main_frame)
@@ -981,14 +1085,9 @@ class EstadisticaHospitalApp:
             self.root.after(0, lambda: self.status_var.set("Descargando catálogo de exámenes..."))
             
             examenes_por_seccion = {}
-            
+
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=str(browser_data_folder),
-                    headless=False,
-                    channel="chrome",
-                    accept_downloads=True
-                )
+                context = self.launch_browser(p, browser_data_folder, headless=False, accept_downloads=True)
                 
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto(url, timeout=60000)
@@ -1523,19 +1622,11 @@ class EstadisticaHospitalApp:
             self.log("=" * 50)
             
             with sync_playwright() as p:
-                self.log("🌐 Iniciando navegador Chrome...")
-                self.log("   💾 Los datos de sesión se guardarán para futuros usos")
-                
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=str(browser_data_folder),
-                    headless=headless,
-                    channel="chrome",
-                    accept_downloads=True
-                )
-                
+                context = self.launch_browser(p, browser_data_folder, headless=headless, accept_downloads=True)
+
                 page = context.pages[0] if context.pages else context.new_page()
-                
-                self.log(f"📄 Navegando a {url}")
+
+                self.log(f"Navegando a {url}")
                 page.goto(url, timeout=60000)
                 page.wait_for_load_state("networkidle", timeout=30000)
                 
