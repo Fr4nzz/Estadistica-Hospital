@@ -9,7 +9,7 @@ Fecha: 2025
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, filedialog
+from tkinter import ttk, messagebox, scrolledtext, filedialog, font as tkfont
 import configparser
 import json
 import os
@@ -18,9 +18,10 @@ import re
 import threading
 import subprocess
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Optional
 import time
+import calendar
 
 # Intentar importar dependencias
 try:
@@ -36,6 +37,13 @@ except ImportError:
     print("Error: Falta instalar playwright. Ejecute: pip install playwright")
     sys.exit(1)
 
+# Intentar importar tkcalendar, si no está disponible usar alternativa
+try:
+    from tkcalendar import DateEntry
+    HAS_TKCALENDAR = True
+except ImportError:
+    HAS_TKCALENDAR = False
+
 
 # ============================================
 # CONFIGURACIÓN POR DEFECTO
@@ -45,9 +53,6 @@ DEFAULT_CONFIG = {
     "General": {
         "URL": "https://hjmvi.orion-labs.com/informes/estadisticos",
         "URLCatalogo": "https://hjmvi.orion-labs.com/informes/catalogos",
-        "TiempoEspera": "0",
-        "TiempoCargaPagina": "5",
-        "TimeoutDescarga": "15",
         "Headless": "false"
     },
     "Informe": {
@@ -65,6 +70,11 @@ DEFAULT_CONFIG = {
         "CarpetaDescargas": "./ExcelsDescargados",
         "ArchivoSalida": "./Estadistica Hospital.xlsx",
         "ArchivoCatalogo": "./catalogo_examenes.json"
+    },
+    "ColumnasMerge": {
+        "HospitalizacionTotal": "Hospitalización,URGENTE HOSPITALIZACION",
+        "ConsultaExternaTotal": "Consulta Externa,URGENTE CONSULTA EXTERNA,REFERENCIA,URGENTE REFERENCIA",
+        "Emergencia": "Emergencia,Sin tipo atención"
     }
 }
 
@@ -86,23 +96,46 @@ DEFAULT_EXAM_CONFIG = {
         "GASOMETRIA VENOSA": "Quimica sanguinea"
     },
     "seccion_categories": {
+        # Secciones que van a Serologicos
         "Autoinmunes e Infecciosas": "Serologicos",
         "Drogas y Fármacos": "Serologicos",
+        "Inmunología": "Serologicos",
+        "Marcadores Tumorales": "Serologicos",
+        "Serología": "Serologicos",
+        "Estudios de Alergias": "Serologicos",
+        "Marcadores Coronarios": "Serologicos",
+        "Inmunoquímica Sanguínea": "Serologicos",
+        
+        # Secciones que van a Quimica sanguinea
         "Bioquímica": "Quimica sanguinea",
-        "Coagulación": "Hematologico",
-        "Coproanálisis": "Materias fecales",
         "Electrolitos": "Quimica sanguinea",
-        "Estudios Hormonales": "Hormonales",
         "Gases Arteriales": "Quimica sanguinea",
+        
+        # Secciones que van a Hematologico
+        "Coagulación": "Hematologico",
         "Hematología": "Hematologico",
         "Inmunohematología": "Hematologico",
-        "Inmunología": "Serologicos",
+        "Plaquetas": "Hematologico",
+        
+        # Secciones que van a Bacteriológico
         "Líquidos Biológicos": "Bacteriológico",
-        "Marcadores Tumorales": "Serologicos",
         "Microbiología": "Bacteriológico",
+        
+        # Secciones que van a Materias fecales
+        "Coproanálisis": "Materias fecales",
+        
+        # Secciones que van a Orina
         "Química Clínica en Orina": "Orina",
-        "Serología": "Serologicos",
-        "Uroanálisis": "Orina"
+        "Uroanálisis": "Orina",
+        
+        # Secciones que van a Hormonales
+        "Estudios Hormonales": "Hormonales",
+        
+        # Otras secciones (pueden necesitar categorización manual)
+        "Biología Molecular": "Serologicos",
+        "Citología": "Bacteriológico",
+        "Especiales": "Other",
+        "Medicina Ocupacional": "Other"
     }
 }
 
@@ -126,9 +159,9 @@ CATEGORY_ORDER = [
 class EstadisticaHospitalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Estadística Hospital v3.1")
-        self.root.geometry("900x700")
-        self.root.minsize(800, 600)
+        self.root.title("Estadística Hospital v3.6")
+        self.root.geometry("950x750")
+        self.root.minsize(900, 650)
         
         # Determinar directorio base
         if getattr(sys, 'frozen', False):
@@ -136,15 +169,21 @@ class EstadisticaHospitalApp:
         else:
             self.base_dir = Path(__file__).parent
         
-        # Cargar configuraciones
+        # Configurar fuentes más grandes
+        self.setup_fonts()
+        
+        # Cargar configuraciones (crea archivos si no existen)
         self.config = self.load_config()
         self.exam_config = self.load_exam_config()
         self.exam_catalog = self.load_exam_catalog()
         
+        # Guardar configuraciones por defecto si son nuevas
+        self.ensure_config_files_exist()
+        
         # Variables de control
         self.should_stop = False
         self.is_running = False
-        self.output_file_path = None
+        self.output_file_path = self.base_dir / self.config.get("Archivos", "ArchivoSalida")
         
         # Crear interfaz
         self.create_notebook()
@@ -152,6 +191,46 @@ class EstadisticaHospitalApp:
         self.create_config_tab()
         self.create_exams_tab()
         self.create_categories_tab()
+        
+        # Habilitar botón de Excel si el archivo existe
+        if self.output_file_path.exists():
+            self.open_excel_button.config(state="normal")
+    
+    def setup_fonts(self):
+        """Configura fuentes más grandes para toda la aplicación"""
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=11)
+        
+        text_font = tkfont.nametofont("TkTextFont")
+        text_font.configure(size=11)
+        
+        fixed_font = tkfont.nametofont("TkFixedFont")
+        fixed_font.configure(size=10)
+        
+        # Configurar estilo para widgets ttk
+        style = ttk.Style()
+        style.configure(".", font=("Segoe UI", 11))
+        style.configure("TLabel", font=("Segoe UI", 11))
+        style.configure("TButton", font=("Segoe UI", 11))
+        style.configure("TEntry", font=("Segoe UI", 11))
+        style.configure("TCombobox", font=("Segoe UI", 11))
+        style.configure("TCheckbutton", font=("Segoe UI", 11))
+        style.configure("TLabelframe.Label", font=("Segoe UI", 11, "bold"))
+        style.configure("TNotebook.Tab", font=("Segoe UI", 11))
+        style.configure("Treeview", font=("Segoe UI", 10), rowheight=25)
+        style.configure("Treeview.Heading", font=("Segoe UI", 11, "bold"))
+    
+    def ensure_config_files_exist(self):
+        """Crea archivos de configuración si no existen"""
+        # config.ini
+        config_file = self.base_dir / "config.ini"
+        if not config_file.exists():
+            self.save_config()
+        
+        # config_examenes.json
+        exam_config_file = self.base_dir / "config_examenes.json"
+        if not exam_config_file.exists():
+            self.save_exam_config()
         
     def load_config(self) -> configparser.ConfigParser:
         """Carga la configuración general"""
@@ -238,39 +317,60 @@ class EstadisticaHospitalApp:
     def create_main_tab(self):
         """Crea la pestaña principal de descarga"""
         # Frame de parámetros
-        params_frame = ttk.LabelFrame(self.main_frame, text="Parámetros de Descarga", padding=10)
-        params_frame.pack(fill="x", padx=10, pady=5)
+        params_frame = ttk.LabelFrame(self.main_frame, text="Parámetros de Descarga", padding=15)
+        params_frame.pack(fill="x", padx=10, pady=10)
         
-        # Año
-        ttk.Label(params_frame, text="Año:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.year_var = tk.StringVar(value=str(datetime.now().year))
-        ttk.Entry(params_frame, textvariable=self.year_var, width=10).grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        # Fecha inicial
+        ttk.Label(params_frame, text="Fecha inicial:").grid(row=0, column=0, sticky="w", padx=5, pady=8)
         
-        # Mes
-        ttk.Label(params_frame, text="Mes:").grid(row=0, column=2, sticky="w", padx=5, pady=2)
-        self.month_var = tk.StringVar(value=str(datetime.now().month))
-        month_combo = ttk.Combobox(params_frame, textvariable=self.month_var, width=8, 
-                                   values=[str(i) for i in range(1, 13)])
-        month_combo.grid(row=0, column=3, sticky="w", padx=5, pady=2)
+        # Calcular primer día del mes actual
+        today = date.today()
+        first_day = date(today.year, today.month, 1)
         
-        # Día inicial
-        ttk.Label(params_frame, text="Día inicial:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.start_day_var = tk.StringVar(value="1")
-        ttk.Entry(params_frame, textvariable=self.start_day_var, width=10).grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        if HAS_TKCALENDAR:
+            self.start_date_entry = DateEntry(params_frame, width=15, date_pattern='yyyy-mm-dd',
+                                              font=("Segoe UI", 11), year=first_day.year,
+                                              month=first_day.month, day=first_day.day)
+            self.start_date_entry.grid(row=0, column=1, sticky="w", padx=5, pady=8)
+        else:
+            self.start_date_var = tk.StringVar(value=first_day.strftime('%Y-%m-%d'))
+            start_entry = ttk.Entry(params_frame, textvariable=self.start_date_var, width=15)
+            start_entry.grid(row=0, column=1, sticky="w", padx=5, pady=8)
+            ttk.Button(params_frame, text="📅", width=3, 
+                      command=lambda: self.show_calendar_popup(self.start_date_var)).grid(row=0, column=2, padx=2)
         
-        # Día final
-        ttk.Label(params_frame, text="Día final:").grid(row=1, column=2, sticky="w", padx=5, pady=2)
-        self.end_day_var = tk.StringVar(value=str(datetime.now().day))
-        ttk.Entry(params_frame, textvariable=self.end_day_var, width=10).grid(row=1, column=3, sticky="w", padx=5, pady=2)
+        # Fecha final
+        ttk.Label(params_frame, text="Fecha final:").grid(row=0, column=3, sticky="w", padx=(20, 5), pady=8)
+        
+        if HAS_TKCALENDAR:
+            self.end_date_entry = DateEntry(params_frame, width=15, date_pattern='yyyy-mm-dd',
+                                            font=("Segoe UI", 11), year=today.year,
+                                            month=today.month, day=today.day)
+            self.end_date_entry.grid(row=0, column=4, sticky="w", padx=5, pady=8)
+        else:
+            self.end_date_var = tk.StringVar(value=today.strftime('%Y-%m-%d'))
+            end_entry = ttk.Entry(params_frame, textvariable=self.end_date_var, width=15)
+            end_entry.grid(row=0, column=4, sticky="w", padx=5, pady=8)
+            ttk.Button(params_frame, text="📅", width=3,
+                      command=lambda: self.show_calendar_popup(self.end_date_var)).grid(row=0, column=5, padx=2)
+        
+        # Botones rápidos de fecha
+        quick_frame = ttk.Frame(params_frame)
+        quick_frame.grid(row=1, column=0, columnspan=6, sticky="w", padx=5, pady=5)
+        
+        ttk.Label(quick_frame, text="Rápido:").pack(side="left", padx=(0, 10))
+        ttk.Button(quick_frame, text="Este mes", command=self.set_this_month).pack(side="left", padx=2)
+        ttk.Button(quick_frame, text="Mes anterior", command=self.set_last_month).pack(side="left", padx=2)
+        ttk.Button(quick_frame, text="Hoy", command=self.set_today).pack(side="left", padx=2)
         
         # Headless mode
         self.headless_var = tk.BooleanVar(value=self.config.get("General", "Headless", fallback="false").lower() == "true")
         ttk.Checkbutton(params_frame, text="Modo oculto (sin ventana del navegador)", 
-                       variable=self.headless_var).grid(row=2, column=0, columnspan=4, sticky="w", padx=5, pady=5)
+                       variable=self.headless_var).grid(row=2, column=0, columnspan=6, sticky="w", padx=5, pady=8)
         
-        # Frame de botones
+        # Frame de botones de descarga
         buttons_frame = ttk.Frame(self.main_frame)
-        buttons_frame.pack(fill="x", padx=10, pady=5)
+        buttons_frame.pack(fill="x", padx=10, pady=10)
         
         self.start_button = ttk.Button(buttons_frame, text="▶ Iniciar Descarga", command=self.start_process)
         self.start_button.pack(side="left", padx=5)
@@ -283,6 +383,27 @@ class EstadisticaHospitalApp:
         
         self.open_folder_button = ttk.Button(buttons_frame, text="📁 Abrir Carpeta", command=self.open_folder)
         self.open_folder_button.pack(side="left", padx=5)
+        
+        self.recalc_button = ttk.Button(buttons_frame, text="🔄 Recalcular Excel", command=self.recalculate_excel)
+        self.recalc_button.pack(side="left", padx=5)
+        
+        # Frame de catálogo de exámenes
+        catalog_frame = ttk.LabelFrame(self.main_frame, text="Catálogo de Exámenes", padding=10)
+        catalog_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Button(catalog_frame, text="🔄 Actualizar Catálogo de Exámenes", 
+                  command=self.update_exam_catalog).pack(side="left", padx=5)
+        
+        # Última actualización
+        self.last_update_var = tk.StringVar()
+        self.update_last_update_label()
+        ttk.Label(catalog_frame, textvariable=self.last_update_var, 
+                 font=("Segoe UI", 10, "italic")).pack(side="left", padx=20)
+        
+        # Info del catálogo
+        self.catalog_info_var = tk.StringVar()
+        self.update_catalog_info()
+        ttk.Label(catalog_frame, textvariable=self.catalog_info_var).pack(side="left", padx=10)
         
         # Barra de progreso
         progress_frame = ttk.Frame(self.main_frame)
@@ -299,13 +420,142 @@ class EstadisticaHospitalApp:
         log_frame = ttk.LabelFrame(self.main_frame, text="Registro de Actividad", padding=5)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, font=("Consolas", 9))
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=12, font=("Consolas", 10))
         self.log_text.pack(fill="both", expand=True)
+    
+    def get_start_date(self) -> date:
+        """Obtiene la fecha de inicio seleccionada"""
+        if HAS_TKCALENDAR:
+            return self.start_date_entry.get_date()
+        else:
+            return datetime.strptime(self.start_date_var.get(), '%Y-%m-%d').date()
+    
+    def get_end_date(self) -> date:
+        """Obtiene la fecha final seleccionada"""
+        if HAS_TKCALENDAR:
+            return self.end_date_entry.get_date()
+        else:
+            return datetime.strptime(self.end_date_var.get(), '%Y-%m-%d').date()
+    
+    def set_date(self, start: date, end: date):
+        """Establece las fechas en los selectores"""
+        if HAS_TKCALENDAR:
+            self.start_date_entry.set_date(start)
+            self.end_date_entry.set_date(end)
+        else:
+            self.start_date_var.set(start.strftime('%Y-%m-%d'))
+            self.end_date_var.set(end.strftime('%Y-%m-%d'))
+    
+    def set_this_month(self):
+        """Establece las fechas para el mes actual"""
+        today = date.today()
+        first_day = date(today.year, today.month, 1)
+        self.set_date(first_day, today)
+    
+    def set_last_month(self):
+        """Establece las fechas para el mes anterior"""
+        today = date.today()
+        # Primer día del mes actual
+        first_this_month = date(today.year, today.month, 1)
+        # Último día del mes anterior
+        last_day_prev = first_this_month - timedelta(days=1)
+        # Primer día del mes anterior
+        first_day_prev = date(last_day_prev.year, last_day_prev.month, 1)
+        self.set_date(first_day_prev, last_day_prev)
+    
+    def set_today(self):
+        """Establece las fechas para hoy"""
+        today = date.today()
+        self.set_date(today, today)
+    
+    def show_calendar_popup(self, date_var):
+        """Muestra un popup de calendario simple (fallback si no hay tkcalendar)"""
+        popup = tk.Toplevel(self.root)
+        popup.title("Seleccionar Fecha")
+        popup.geometry("250x200")
+        popup.transient(self.root)
+        popup.grab_set()
+        
+        # Parse current date
+        try:
+            current = datetime.strptime(date_var.get(), '%Y-%m-%d').date()
+        except:
+            current = date.today()
+        
+        # Year and month selection
+        frame = ttk.Frame(popup, padding=10)
+        frame.pack(fill="both", expand=True)
+        
+        ttk.Label(frame, text="Año:").grid(row=0, column=0, padx=5, pady=5)
+        year_var = tk.StringVar(value=str(current.year))
+        year_spin = ttk.Spinbox(frame, from_=2020, to=2030, textvariable=year_var, width=6)
+        year_spin.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(frame, text="Mes:").grid(row=1, column=0, padx=5, pady=5)
+        month_var = tk.StringVar(value=str(current.month))
+        month_spin = ttk.Spinbox(frame, from_=1, to=12, textvariable=month_var, width=6)
+        month_spin.grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(frame, text="Día:").grid(row=2, column=0, padx=5, pady=5)
+        day_var = tk.StringVar(value=str(current.day))
+        day_spin = ttk.Spinbox(frame, from_=1, to=31, textvariable=day_var, width=6)
+        day_spin.grid(row=2, column=1, padx=5, pady=5)
+        
+        def apply_date():
+            try:
+                new_date = date(int(year_var.get()), int(month_var.get()), int(day_var.get()))
+                date_var.set(new_date.strftime('%Y-%m-%d'))
+                popup.destroy()
+            except ValueError as e:
+                messagebox.showerror("Error", f"Fecha inválida: {e}")
+        
+        ttk.Button(frame, text="Aceptar", command=apply_date).grid(row=3, column=0, columnspan=2, pady=10)
+    
+    def update_last_update_label(self):
+        """Actualiza la etiqueta de última actualización"""
+        ultima = self.exam_catalog.get("ultima_actualizacion")
+        if ultima:
+            self.last_update_var.set(f"Última actualización: {ultima}")
+        else:
+            self.last_update_var.set("Catálogo no descargado")
+    
+    def update_catalog_info(self):
+        """Actualiza la información del catálogo"""
+        examenes = self.exam_catalog.get("examenes", {})
+        if isinstance(examenes, dict):
+            total = sum(len(exams) for exams in examenes.values())
+            secciones = len(examenes)
+            self.catalog_info_var.set(f"({total} exámenes en {secciones} secciones)")
+        elif isinstance(examenes, list):
+            self.catalog_info_var.set(f"({len(examenes)} exámenes)")
+        else:
+            self.catalog_info_var.set("")
     
     def create_config_tab(self):
         """Crea la pestaña de configuración web"""
+        # Crear un canvas con scrollbar para permitir scroll
+        canvas = tk.Canvas(self.config_frame)
+        scrollbar = ttk.Scrollbar(self.config_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Bind mouse wheel
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
         # Frame de URL y navegación
-        web_frame = ttk.LabelFrame(self.config_frame, text="Configuración del Sitio Web", padding=10)
+        web_frame = ttk.LabelFrame(scrollable_frame, text="Configuración del Sitio Web", padding=10)
         web_frame.pack(fill="x", padx=10, pady=5)
         
         ttk.Label(web_frame, text="URL del sitio:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -313,7 +563,7 @@ class EstadisticaHospitalApp:
         ttk.Entry(web_frame, textvariable=self.url_var, width=60).grid(row=0, column=1, sticky="ew", padx=5, pady=2)
         
         # Frame de elementos del formulario
-        form_frame = ttk.LabelFrame(self.config_frame, text="Elementos del Formulario (IDs HTML)", padding=10)
+        form_frame = ttk.LabelFrame(scrollable_frame, text="Elementos del Formulario (IDs HTML)", padding=10)
         form_frame.pack(fill="x", padx=10, pady=5)
         
         ttk.Label(form_frame, text="ID Dropdown Agrupar:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -332,24 +582,8 @@ class EstadisticaHospitalApp:
         self.fecha_hasta_var = tk.StringVar(value=self.config.get("Informe", "IdFechaHasta"))
         ttk.Entry(form_frame, textvariable=self.fecha_hasta_var, width=30).grid(row=3, column=1, sticky="w", padx=5, pady=2)
         
-        # Frame de tiempos
-        timing_frame = ttk.LabelFrame(self.config_frame, text="Tiempos de Espera (segundos)", padding=10)
-        timing_frame.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(timing_frame, text="Entre descargas:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.wait_time_var = tk.StringVar(value=self.config.get("General", "TiempoEspera"))
-        ttk.Entry(timing_frame, textvariable=self.wait_time_var, width=10).grid(row=0, column=1, sticky="w", padx=5, pady=2)
-        
-        ttk.Label(timing_frame, text="Timeout de descarga:").grid(row=0, column=2, sticky="w", padx=5, pady=2)
-        self.timeout_var = tk.StringVar(value=self.config.get("General", "TimeoutDescarga"))
-        ttk.Entry(timing_frame, textvariable=self.timeout_var, width=10).grid(row=0, column=3, sticky="w", padx=5, pady=2)
-        
-        ttk.Label(timing_frame, text="Carga de página:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.page_load_var = tk.StringVar(value=self.config.get("General", "TiempoCargaPagina"))
-        ttk.Entry(timing_frame, textvariable=self.page_load_var, width=10).grid(row=1, column=1, sticky="w", padx=5, pady=2)
-        
         # Frame de archivos
-        files_frame = ttk.LabelFrame(self.config_frame, text="Rutas de Archivos", padding=10)
+        files_frame = ttk.LabelFrame(scrollable_frame, text="Rutas de Archivos", padding=10)
         files_frame.pack(fill="x", padx=10, pady=5)
         
         ttk.Label(files_frame, text="Carpeta de descargas:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -360,8 +594,38 @@ class EstadisticaHospitalApp:
         self.output_file_var = tk.StringVar(value=self.config.get("Archivos", "ArchivoSalida"))
         ttk.Entry(files_frame, textvariable=self.output_file_var, width=40).grid(row=1, column=1, sticky="w", padx=5, pady=2)
         
+        # Frame de columnas merge
+        merge_frame = ttk.LabelFrame(scrollable_frame, text="Columnas a Combinar en Estadística Calculada", padding=10)
+        merge_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(merge_frame, text="Las columnas se combinan sumándolas. Separe con comas.",
+                 font=("", 9, "italic")).grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(merge_frame, text="Hospitalización Total =").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.hosp_total_var = tk.StringVar(value=self.config.get("ColumnasMerge", "HospitalizacionTotal", 
+                                           fallback="Hospitalización,URGENTE HOSPITALIZACION"))
+        ttk.Entry(merge_frame, textvariable=self.hosp_total_var, width=50).grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(merge_frame, text="Consulta Externa Total =").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.cons_total_var = tk.StringVar(value=self.config.get("ColumnasMerge", "ConsultaExternaTotal",
+                                           fallback="Consulta Externa,URGENTE CONSULTA EXTERNA,REFERENCIA,URGENTE REFERENCIA"))
+        ttk.Entry(merge_frame, textvariable=self.cons_total_var, width=50).grid(row=2, column=1, sticky="w", padx=5, pady=2)
+        
+        ttk.Label(merge_frame, text="Emergencia =").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        self.emerg_var = tk.StringVar(value=self.config.get("ColumnasMerge", "Emergencia",
+                                      fallback="Emergencia,Sin tipo atención"))
+        ttk.Entry(merge_frame, textvariable=self.emerg_var, width=50).grid(row=3, column=1, sticky="w", padx=5, pady=2)
+        
+        # Info sobre columnas disponibles
+        ttk.Label(merge_frame, text="Columnas disponibles en los datos descargados:",
+                 font=("", 9)).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=(10, 2))
+        available_cols = "REFERENCIA, Hospitalización, Emergencia, URGENTE CONSULTA EXTERNA, " \
+                        "Consulta Externa, Sin tipo atención, URGENTE REFERENCIA, URGENTE HOSPITALIZACION, Total"
+        ttk.Label(merge_frame, text=available_cols, font=("", 8, "italic"), 
+                 wraplength=500).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        
         # Botón guardar
-        ttk.Button(self.config_frame, text="💾 Guardar Configuración", 
+        ttk.Button(scrollable_frame, text="💾 Guardar Configuración", 
                   command=self.save_web_config).pack(pady=10)
     
     def create_exams_tab(self):
@@ -433,7 +697,18 @@ class EstadisticaHospitalApp:
     
     def update_exam_combobox(self):
         """Actualiza el combobox con la lista de exámenes del catálogo"""
-        examenes = self.exam_catalog.get("examenes", [])
+        examenes_dict = self.exam_catalog.get("examenes", {})
+        
+        # Handle both old format (list) and new format (dict by section)
+        if isinstance(examenes_dict, list):
+            examenes = examenes_dict
+        else:
+            # Flatten dict to list
+            examenes = []
+            for section_exams in examenes_dict.values():
+                examenes.extend(section_exams)
+            examenes = sorted(set(examenes))
+        
         self.exam_combobox['values'] = examenes
     
     def filter_exam_combobox(self, event):
@@ -443,7 +718,16 @@ class EstadisticaHospitalApp:
             self.update_exam_combobox()
             return
         
-        examenes = self.exam_catalog.get("examenes", [])
+        examenes_dict = self.exam_catalog.get("examenes", {})
+        
+        # Handle both formats
+        if isinstance(examenes_dict, list):
+            examenes = examenes_dict
+        else:
+            examenes = []
+            for section_exams in examenes_dict.values():
+                examenes.extend(section_exams)
+        
         # Filtro fuzzy: buscar exámenes que contengan las palabras escritas
         words = typed.split()
         filtered = []
@@ -451,6 +735,9 @@ class EstadisticaHospitalApp:
             exam_upper = exam.upper()
             if all(word in exam_upper for word in words):
                 filtered.append(exam)
+        
+        # Eliminar duplicados y ordenar
+        filtered = sorted(set(filtered))
         
         self.exam_combobox['values'] = filtered[:20]  # Limitar a 20 resultados
         
@@ -539,31 +826,26 @@ class EstadisticaHospitalApp:
     def create_uncategorized_list(self, parent):
         """Crea la lista de exámenes sin categorizar"""
         info_label = ttk.Label(parent, text="Exámenes del catálogo que no tienen categoría asignada.\n"
-                              "Actualice el catálogo para obtener la lista completa de exámenes del sistema.")
+                              "Actualice el catálogo desde la pestaña 'Descarga' para obtener la lista completa.")
         info_label.pack(padx=10, pady=5, anchor="w")
         
-        # Frame de actualización
-        update_frame = ttk.Frame(parent)
-        update_frame.pack(fill="x", padx=10, pady=5)
+        # Frame de botones
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", padx=10, pady=5)
         
-        ttk.Button(update_frame, text="🔄 Actualizar Catálogo de Exámenes", 
-                  command=self.update_exam_catalog).pack(side="left", padx=5)
-        
-        # Última actualización
-        self.last_update_var = tk.StringVar()
-        self.update_last_update_label()
-        ttk.Label(update_frame, textvariable=self.last_update_var, 
-                 font=("", 9, "italic")).pack(side="left", padx=20)
-        
-        # Botón para mostrar sin categorizar
-        ttk.Button(update_frame, text="🔍 Mostrar Sin Categorizar", 
+        ttk.Button(btn_frame, text="🔍 Mostrar Sin Categorizar", 
                   command=self.show_uncategorized).pack(side="left", padx=5)
         
+        ttk.Button(btn_frame, text="🔄 Auto-Categorizar desde Catálogo", 
+                  command=self.auto_categorize_from_catalog).pack(side="left", padx=5)
+        
         # Treeview
-        columns = ("exam",)
+        columns = ("exam", "section")
         self.uncat_tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
         self.uncat_tree.heading("exam", text="Examen Sin Categorizar")
-        self.uncat_tree.column("exam", width=500)
+        self.uncat_tree.heading("section", text="Sección (del catálogo)")
+        self.uncat_tree.column("exam", width=400)
+        self.uncat_tree.column("section", width=200)
         
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.uncat_tree.yview)
         self.uncat_tree.configure(yscrollcommand=scrollbar.set)
@@ -597,9 +879,21 @@ class EstadisticaHospitalApp:
         for item in self.uncat_tree.get_children():
             self.uncat_tree.delete(item)
         
-        examenes = self.exam_catalog.get("examenes", [])
-        if not examenes:
-            messagebox.showinfo("Info", "No hay exámenes en el catálogo.\nHaga clic en 'Actualizar Catálogo de Exámenes' primero.")
+        examenes_dict = self.exam_catalog.get("examenes", {})
+        
+        # Handle both old format (list) and new format (dict by section)
+        if isinstance(examenes_dict, list):
+            # Old format - just a list of exam names
+            examenes_con_seccion = [(exam, "") for exam in examenes_dict]
+        else:
+            # New format - dict with section -> [exams]
+            examenes_con_seccion = []
+            for seccion, exams in examenes_dict.items():
+                for exam in exams:
+                    examenes_con_seccion.append((exam, seccion))
+        
+        if not examenes_con_seccion:
+            messagebox.showinfo("Info", "No hay exámenes en el catálogo.\nHaga clic en 'Actualizar Catálogo de Exámenes' en la pestaña Descarga.")
             return
         
         # Obtener categorías configuradas
@@ -608,18 +902,28 @@ class EstadisticaHospitalApp:
         
         # Encontrar sin categorizar
         uncategorized = []
-        for exam in examenes:
-            if exam not in exam_categories:
-                uncategorized.append(exam)
+        for exam, seccion in examenes_con_seccion:
+            # Check if exam has category directly
+            if exam in exam_categories:
+                continue
+            # Check if section has category
+            if seccion and seccion in seccion_categories:
+                continue
+            uncategorized.append((exam, seccion))
+        
+        # Ordenar alfabéticamente
+        uncategorized.sort(key=lambda x: x[0])
         
         # Agregar a la lista
-        for exam in uncategorized:
-            self.uncat_tree.insert("", "end", values=(exam,))
+        for exam, seccion in uncategorized:
+            self.uncat_tree.insert("", "end", values=(exam, seccion))
         
         if not uncategorized:
-            messagebox.showinfo("Completo", f"Todos los {len(examenes)} exámenes tienen categoría asignada")
+            total = len(examenes_con_seccion)
+            messagebox.showinfo("Completo", f"Todos los {total} exámenes tienen categoría asignada")
         else:
-            messagebox.showinfo("Resultado", f"Se encontraron {len(uncategorized)} exámenes sin categorizar de {len(examenes)} totales")
+            total = len(examenes_con_seccion)
+            messagebox.showinfo("Resultado", f"Se encontraron {len(uncategorized)} exámenes sin categorizar de {total} totales")
     
     def update_exam_catalog(self):
         """Descarga el catálogo de exámenes del sistema"""
@@ -629,7 +933,7 @@ class EstadisticaHospitalApp:
         thread.start()
     
     def _download_exam_catalog(self):
-        """Descarga el catálogo de exámenes (ejecutar en hilo)"""
+        """Descarga el catálogo de exámenes por sección (ejecutar en hilo)"""
         try:
             url = self.config.get("General", "URLCatalogo", fallback="https://hjmvi.orion-labs.com/informes/catalogos")
             dropdown_id = self.config.get("Catalogo", "IdDropdownTipo", fallback="tipo")
@@ -642,8 +946,39 @@ class EstadisticaHospitalApp:
             downloads_folder = self.base_dir / self.config.get("Archivos", "CarpetaDescargas")
             downloads_folder.mkdir(exist_ok=True)
             
-            self.root.after(0, lambda: messagebox.showinfo("Descargando", 
-                "Descargando catálogo de exámenes...\nSe abrirá una ventana del navegador.\nEspere a que se complete la descarga."))
+            # Lista de secciones a descargar
+            secciones = [
+                "Autoinmunes e Infecciosas",
+                "Biología Molecular",
+                "Bioquímica",
+                "Citología",
+                "Coagulación",
+                "Coproanálisis",
+                "Drogas y Fármacos",
+                "Electrolitos",
+                "Especiales",
+                "Estudios de Alergias",
+                "Estudios Hormonales",
+                "Gases Arteriales",
+                "Hematología",
+                "Inmunohematología",
+                "Inmunología",
+                "Inmunoquímica Sanguínea",
+                "Líquidos Biológicos",
+                "Marcadores Coronarios",
+                "Marcadores Tumorales",
+                "Medicina Ocupacional",
+                "Microbiología",
+                "Plaquetas",
+                "Química Clínica en Orina",
+                "Serología",
+                "Uroanálisis"
+            ]
+            
+            self.root.after(0, lambda: self.log("🔄 Descargando catálogo de exámenes por sección..."))
+            self.root.after(0, lambda: self.status_var.set("Descargando catálogo de exámenes..."))
+            
+            examenes_por_seccion = {}
             
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
@@ -659,7 +994,7 @@ class EstadisticaHospitalApp:
                 # Esperar a que cargue
                 page.wait_for_load_state("networkidle", timeout=10000)
                 
-                # Verificar login
+                # Verificar login - esperar a que aparezca el dropdown de tipo
                 max_wait = 120
                 waited = 0
                 while waited < max_wait:
@@ -673,69 +1008,125 @@ class EstadisticaHospitalApp:
                     waited += 2
                 
                 if waited >= max_wait:
-                    self.root.after(0, lambda: messagebox.showerror("Error", "Timeout esperando la página"))
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Timeout esperando la página. ¿Necesita iniciar sesión?"))
                     context.close()
                     return
                 
-                # Seleccionar "Exámenes" en el dropdown
+                # Seleccionar "Exámenes" en el dropdown de Tipo
                 dropdown = page.query_selector(f"#{dropdown_id}")
                 if dropdown:
                     dropdown.select_option(value=dropdown_value)
                     time.sleep(1)
                 
-                # Hacer clic en Generar informe
-                with page.expect_download(timeout=30000) as download_info:
-                    generar_btn = page.query_selector(f"#{button_id}")
-                    if generar_btn:
-                        generar_btn.click()
-                    else:
-                        # Intentar por texto
-                        page.click("button:has-text('Generar informe')")
+                total_secciones = len(secciones)
+                secciones_descargadas = 0
                 
-                download = download_info.value
-                temp_path = downloads_folder / "catalogo_temp.xlsx"
-                download.save_as(temp_path)
+                for seccion in secciones:
+                    try:
+                        self.root.after(0, lambda s=seccion, i=secciones_descargadas, t=total_secciones: 
+                            self.status_var.set(f"Descargando {s} ({i+1}/{t})..."))
+                        self.root.after(0, lambda i=secciones_descargadas, t=total_secciones: 
+                            self.progress_var.set((i / t) * 100))
+                        
+                        # Hacer clic en el dropdown de secciones para abrirlo
+                        secciones_input = page.query_selector("#secciones input.vs__search")
+                        if secciones_input:
+                            secciones_input.click()
+                            time.sleep(0.5)
+                            
+                            # Escribir el nombre de la sección para filtrar
+                            secciones_input.fill(seccion)
+                            time.sleep(0.5)
+                            
+                            # Hacer clic en la opción que aparece
+                            option = page.query_selector(f".vs__dropdown-menu .vs__dropdown-option")
+                            if option:
+                                option.click()
+                                time.sleep(0.3)
+                        
+                        # Descargar
+                        try:
+                            with page.expect_download(timeout=15000) as download_info:
+                                generar_btn = page.query_selector(f"#{button_id}")
+                                if generar_btn:
+                                    generar_btn.click()
+                                else:
+                                    page.click("button:has-text('Generar informe')")
+                            
+                            download = download_info.value
+                            temp_path = downloads_folder / f"catalogo_{seccion.replace(' ', '_')}.xlsx"
+                            download.save_as(temp_path)
+                            
+                            # Leer el archivo Excel y extraer exámenes
+                            df = pd.read_excel(temp_path, skiprows=3)
+                            
+                            # Buscar la columna de exámenes
+                            exam_col = None
+                            for col in df.columns:
+                                if 'examen' in col.lower():
+                                    exam_col = col
+                                    break
+                            
+                            if exam_col is None and len(df.columns) > 0:
+                                exam_col = df.columns[0]
+                            
+                            if exam_col:
+                                examenes = df[exam_col].dropna().astype(str).tolist()
+                                examenes = [e.strip() for e in examenes 
+                                           if e.strip() and not e.startswith('Hospital') and not e.startswith('Generado')]
+                                examenes_por_seccion[seccion] = examenes
+                                self.root.after(0, lambda s=seccion, n=len(examenes): 
+                                    self.log(f"   ✅ {s}: {n} exámenes"))
+                            
+                            # Eliminar archivo temporal
+                            try:
+                                temp_path.unlink()
+                            except:
+                                pass
+                            
+                        except Exception as e:
+                            self.root.after(0, lambda s=seccion, err=str(e): 
+                                self.log(f"   ⚠️ {s}: Error - {err}"))
+                        
+                        # Limpiar la selección de sección para la siguiente iteración
+                        # Hacer clic en el botón X para deseleccionar
+                        deselect_btns = page.query_selector_all("#secciones .vs__deselect")
+                        for btn in deselect_btns:
+                            try:
+                                btn.click()
+                                time.sleep(0.2)
+                            except:
+                                pass
+                        
+                        secciones_descargadas += 1
+                        
+                    except Exception as e:
+                        self.root.after(0, lambda s=seccion, err=str(e): 
+                            self.log(f"   ❌ {s}: Error - {err}"))
+                        continue
                 
                 context.close()
             
-            # Leer el archivo Excel y extraer exámenes
-            df = pd.read_excel(temp_path, skiprows=3)  # Saltar las primeras filas de encabezado
-            
-            # Buscar la columna de exámenes
-            exam_col = None
-            for col in df.columns:
-                if 'examen' in col.lower():
-                    exam_col = col
-                    break
-            
-            if exam_col is None:
-                # Usar la primera columna
-                exam_col = df.columns[0]
-            
-            # Extraer exámenes únicos
-            examenes = df[exam_col].dropna().astype(str).tolist()
-            examenes = [e.strip() for e in examenes if e.strip() and not e.startswith('Hospital') and not e.startswith('Generado')]
-            examenes = list(set(examenes))  # Únicos
-            examenes.sort()
-            
-            # Guardar catálogo
-            self.save_exam_catalog(examenes)
+            # Guardar catálogo con estructura por sección
+            self.save_exam_catalog(examenes_por_seccion)
             self.exam_catalog = self.load_exam_catalog()
+            
+            # Contar total de exámenes
+            total_examenes = sum(len(exams) for exams in examenes_por_seccion.values())
             
             # Actualizar UI
             self.root.after(0, self.update_last_update_label)
             self.root.after(0, self.update_exam_combobox)
+            self.root.after(0, self.update_catalog_info)
+            self.root.after(0, lambda: self.progress_var.set(100))
+            self.root.after(0, lambda: self.status_var.set("Catálogo actualizado"))
             
-            # Eliminar archivo temporal
-            try:
-                temp_path.unlink()
-            except:
-                pass
-            
+            self.root.after(0, lambda: self.log(f"✅ Catálogo actualizado: {total_examenes} exámenes en {len(examenes_por_seccion)} secciones"))
             self.root.after(0, lambda: messagebox.showinfo("Completado", 
-                f"Catálogo actualizado con {len(examenes)} exámenes"))
+                f"Catálogo actualizado:\n{total_examenes} exámenes en {len(examenes_por_seccion)} secciones"))
             
         except Exception as e:
+            self.root.after(0, lambda: self.log(f"❌ Error: {str(e)}"))
             self.root.after(0, lambda: messagebox.showerror("Error", f"Error descargando catálogo: {str(e)}"))
     
     # ============================================
@@ -745,15 +1136,19 @@ class EstadisticaHospitalApp:
     def save_web_config(self):
         """Guarda la configuración web"""
         self.config.set("General", "URL", self.url_var.get())
-        self.config.set("General", "TiempoEspera", self.wait_time_var.get())
-        self.config.set("General", "TimeoutDescarga", self.timeout_var.get())
-        self.config.set("General", "TiempoCargaPagina", self.page_load_var.get())
         self.config.set("Informe", "IdDropdownAgrupar", self.dropdown_id_var.get())
         self.config.set("Informe", "ValorAgrupacion", self.dropdown_value_var.get())
         self.config.set("Informe", "IdFechaDesde", self.fecha_desde_var.get())
         self.config.set("Informe", "IdFechaHasta", self.fecha_hasta_var.get())
         self.config.set("Archivos", "CarpetaDescargas", self.downloads_folder_var.get())
         self.config.set("Archivos", "ArchivoSalida", self.output_file_var.get())
+        
+        # Guardar configuración de columnas merge
+        if not self.config.has_section("ColumnasMerge"):
+            self.config.add_section("ColumnasMerge")
+        self.config.set("ColumnasMerge", "HospitalizacionTotal", self.hosp_total_var.get())
+        self.config.set("ColumnasMerge", "ConsultaExternaTotal", self.cons_total_var.get())
+        self.config.set("ColumnasMerge", "Emergencia", self.emerg_var.get())
         
         self.save_config()
         messagebox.showinfo("Guardado", "Configuración guardada correctamente")
@@ -897,6 +1292,61 @@ class EstadisticaHospitalApp:
         
         messagebox.showinfo("Agregado", f"'{exam}' agregado a categoría '{cat}'")
     
+    def auto_categorize_from_catalog(self):
+        """Auto-categoriza exámenes basándose en la sección del catálogo y seccion_categories"""
+        examenes_dict = self.exam_catalog.get("examenes", {})
+        
+        if not isinstance(examenes_dict, dict) or not examenes_dict:
+            messagebox.showwarning("Aviso", "No hay catálogo con información de secciones.\n"
+                                  "Haga clic en 'Actualizar Catálogo de Exámenes' primero.")
+            return
+        
+        seccion_categories = self.exam_config.get("seccion_categories", {})
+        exam_categories = self.exam_config.get("exam_categories", {})
+        
+        nuevas_categorias = 0
+        secciones_sin_categoria = set()
+        
+        for seccion, exams in examenes_dict.items():
+            # Check if this section has a category mapping
+            if seccion in seccion_categories:
+                categoria = seccion_categories[seccion]
+                for exam in exams:
+                    # Only add if exam doesn't already have a category
+                    if exam not in exam_categories:
+                        exam_categories[exam] = categoria
+                        nuevas_categorias += 1
+            else:
+                # Section doesn't have a category mapping
+                secciones_sin_categoria.add(seccion)
+        
+        # Save updates
+        self.exam_config["exam_categories"] = exam_categories
+        self.save_exam_config()
+        
+        # Refresh the exam categories tree
+        for item in self.exam_cat_tree.get_children():
+            self.exam_cat_tree.delete(item)
+        for name, cat in exam_categories.items():
+            self.exam_cat_tree.insert("", "end", values=(name, cat))
+        
+        # Show results
+        msg = f"Auto-categorización completada:\n\n"
+        msg += f"✅ {nuevas_categorias} exámenes categorizados automáticamente\n"
+        
+        if secciones_sin_categoria:
+            msg += f"\n⚠️ Las siguientes secciones del catálogo no tienen\n"
+            msg += f"una categoría asignada en 'Por Sección':\n"
+            for sec in sorted(secciones_sin_categoria):
+                msg += f"  • {sec}\n"
+            msg += f"\nAgregue estas secciones en la pestaña 'Por Sección'\n"
+            msg += f"para poder auto-categorizar sus exámenes."
+        
+        messagebox.showinfo("Auto-Categorización", msg)
+        
+        # Refresh uncategorized list
+        self.show_uncategorized()
+    
     # ============================================
     # FUNCIONES DE CONTROL DE PROCESO
     # ============================================
@@ -968,6 +1418,46 @@ class EstadisticaHospitalApp:
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo abrir la carpeta: {e}")
     
+    def recalculate_excel(self):
+        """Recalcula el Excel con los archivos descargados existentes"""
+        downloads_folder = self.base_dir / self.config.get("Archivos", "CarpetaDescargas")
+        
+        if not downloads_folder.exists():
+            messagebox.showwarning("Aviso", "No existe la carpeta de descargas.\nPrimero descargue los datos.")
+            return
+        
+        # Verificar si hay archivos Excel
+        pattern = re.compile(r'^\d.*\.xlsx$')
+        xlsx_files = [f for f in downloads_folder.glob('*.xlsx') if pattern.match(f.name)]
+        
+        if not xlsx_files:
+            messagebox.showwarning("Aviso", "No hay archivos Excel en la carpeta de descargas.\nPrimero descargue los datos.")
+            return
+        
+        # Confirmar
+        result = messagebox.askyesno("Recalcular Excel", 
+            f"Se encontraron {len(xlsx_files)} archivos en la carpeta de descargas.\n\n"
+            "¿Desea regenerar el archivo Excel con la configuración actual de multiplicadores y categorías?")
+        
+        if not result:
+            return
+        
+        # Recalcular
+        self.output_file_path = self.base_dir / self.config.get("Archivos", "ArchivoSalida")
+        
+        self.log("=" * 50)
+        self.log("🔄 Recalculando Excel...")
+        self.log(f"   Archivos encontrados: {len(xlsx_files)}")
+        
+        try:
+            self.process_excel_files(downloads_folder)
+            self.log("✅ Excel regenerado correctamente")
+            self.open_excel_button.config(state="normal")
+            messagebox.showinfo("Completado", "Excel regenerado correctamente")
+        except Exception as e:
+            self.log(f"❌ Error: {str(e)}")
+            messagebox.showerror("Error", f"Error al recalcular: {str(e)}")
+    
     def check_file_locked(self, filepath: Path) -> bool:
         """Verifica si un archivo está bloqueado (abierto en otra aplicación)"""
         if not filepath.exists():
@@ -987,17 +1477,12 @@ class EstadisticaHospitalApp:
     def run_automation(self):
         """Ejecuta el proceso de automatización"""
         try:
-            # Obtener parámetros
-            year = int(self.year_var.get())
-            month = int(self.month_var.get())
-            start_day = int(self.start_day_var.get())
-            end_day = int(self.end_day_var.get())
+            # Obtener parámetros de fechas
+            start_date = self.get_start_date()
+            end_date = self.get_end_date()
             headless = self.headless_var.get()
-            wait_time = float(self.config.get("General", "TiempoEspera", fallback="0"))
             
             url = self.config.get("General", "URL")
-            page_load_time = int(self.config.get("General", "TiempoCargaPagina"))
-            download_timeout = int(self.config.get("General", "TimeoutDescarga", fallback="15")) * 1000
             
             dropdown_id = self.config.get("Informe", "IdDropdownAgrupar", fallback="agrupar-por")
             dropdown_value = self.config.get("Informe", "ValorAgrupacion", fallback="SECCION_TIPO_ATENCION")
@@ -1026,11 +1511,12 @@ class EstadisticaHospitalApp:
             browser_data_folder = self.base_dir / "browser_data"
             browser_data_folder.mkdir(exist_ok=True)
             
-            total_days = end_day - start_day + 1
+            # Calcular total de días
+            total_days = (end_date - start_date).days + 1
             
             self.log("=" * 50)
             self.log("🚀 Iniciando automatización...")
-            self.log(f"📅 Rango: {year}-{month:02d}-{start_day:02d} al {year}-{month:02d}-{end_day:02d}")
+            self.log(f"📅 Rango: {start_date.strftime('%Y-%m-%d')} al {end_date.strftime('%Y-%m-%d')}")
             self.log(f"📁 Carpeta de descargas: {downloads_folder}")
             self.log("=" * 50)
             
@@ -1049,7 +1535,7 @@ class EstadisticaHospitalApp:
                 
                 self.log(f"📄 Navegando a {url}")
                 page.goto(url, timeout=60000)
-                page.wait_for_load_state("networkidle", timeout=page_load_time * 1000)
+                page.wait_for_load_state("networkidle", timeout=30000)
                 
                 # Verificar login
                 max_login_wait = 300
@@ -1084,11 +1570,7 @@ class EstadisticaHospitalApp:
                         self.log(f"   ⏳ Esperando inicio de sesión (máximo {max_login_wait // 60} minutos)...")
                         first_message = False
                     
-                    try:
-                        time.sleep(login_check_interval)
-                    except:
-                        time.sleep(login_check_interval)
-                    
+                    time.sleep(login_check_interval)
                     waited_time += login_check_interval
                     
                     if waited_time % 10 == 0:
@@ -1111,20 +1593,23 @@ class EstadisticaHospitalApp:
                 
                 downloaded_files = []
                 
-                for day_index, current_day in enumerate(range(start_day, end_day + 1)):
+                # Iterar por cada día en el rango
+                current = start_date
+                day_index = 0
+                while current <= end_date:
                     if self.should_stop:
                         self.log("⏹ Proceso detenido por el usuario")
                         break
                     
-                    current_date = f"{year}-{month:02d}-{current_day:02d}"
-                    self.update_progress(day_index, total_days, f"Descargando {current_date}...")
-                    self.log(f"📥 Procesando día {current_day}/{end_day}: {current_date}")
+                    current_date_str = current.strftime('%Y-%m-%d')
+                    self.update_progress(day_index, total_days, f"Descargando {current_date_str}...")
+                    self.log(f"📥 Procesando día {day_index + 1}/{total_days}: {current_date_str}")
                     
                     try:
                         # Establecer fechas
                         page.evaluate(f"""
-                            document.getElementById('{id_fecha_desde}').value = '{current_date}';
-                            document.getElementById('{id_fecha_hasta}').value = '{current_date}';
+                            document.getElementById('{id_fecha_desde}').value = '{current_date_str}';
+                            document.getElementById('{id_fecha_hasta}').value = '{current_date_str}';
                             document.getElementById('{id_fecha_desde}').dispatchEvent(new Event('input', {{ bubbles: true }}));
                             document.getElementById('{id_fecha_hasta}').dispatchEvent(new Event('input', {{ bubbles: true }}));
                         """)
@@ -1162,25 +1647,26 @@ class EstadisticaHospitalApp:
                             excel_link = page.query_selector("text=Excel")
                         
                         if excel_link:
-                            with page.expect_download(timeout=download_timeout) as download_info:
+                            with page.expect_download(timeout=30000) as download_info:
                                 excel_link.click()
                             
                             download = download_info.value
-                            download_path = downloads_folder / f"{current_date}.xlsx"
+                            download_path = downloads_folder / f"{current_date_str}.xlsx"
                             download.save_as(download_path)
                             downloaded_files.append(download_path)
                             
-                            self.log(f"   ✅ Guardado: {current_date}.xlsx")
+                            self.log(f"   ✅ Guardado: {current_date_str}.xlsx")
                         else:
-                            self.log(f"   ⚠️ No se encontró el enlace Excel para {current_date}")
-                        
-                        if wait_time > 0:
-                            page.wait_for_timeout(int(wait_time * 1000))
+                            self.log(f"   ⚠️ No se encontró el enlace Excel para {current_date_str}")
                         
                     except PlaywrightTimeout:
-                        self.log(f"   ⚠️ Timeout en {current_date}, continuando...")
+                        self.log(f"   ⚠️ Timeout en {current_date_str}, continuando...")
                     except Exception as e:
-                        self.log(f"   ❌ Error en {current_date}: {str(e)}")
+                        self.log(f"   ❌ Error en {current_date_str}: {str(e)}")
+                    
+                    # Avanzar al siguiente día
+                    current += timedelta(days=1)
+                    day_index += 1
                 
                 context.close()
             
@@ -1358,21 +1844,23 @@ class EstadisticaHospitalApp:
         def safe_get_col(df, col):
             return df[col] if col in df.columns else 0
         
-        summary_table['Hospitalización Total'] = (
-            safe_get_col(summary_table, 'Hospitalización') + 
-            safe_get_col(summary_table, 'URGENTE HOSPITALIZACION') + 
-            safe_get_col(summary_table, 'Sin tipo atención')
-        )
+        # Obtener configuración de columnas a combinar
+        hosp_cols = [c.strip() for c in self.config.get("ColumnasMerge", "HospitalizacionTotal", 
+                    fallback="Hospitalización,URGENTE HOSPITALIZACION").split(",")]
+        cons_cols = [c.strip() for c in self.config.get("ColumnasMerge", "ConsultaExternaTotal",
+                    fallback="Consulta Externa,URGENTE CONSULTA EXTERNA,REFERENCIA,URGENTE REFERENCIA").split(",")]
+        emerg_cols = [c.strip() for c in self.config.get("ColumnasMerge", "Emergencia",
+                     fallback="Emergencia,Sin tipo atención").split(",")]
         
-        summary_table['Consulta Externa Total'] = (
-            safe_get_col(summary_table, 'Consulta Externa') + 
-            safe_get_col(summary_table, 'URGENTE CONSULTA EXTERNA') + 
-            safe_get_col(summary_table, 'REFERENCIA') + 
-            safe_get_col(summary_table, 'URGENTE REFERENCIA')
-        )
+        self.log(f"   📊 Columnas combinadas:")
+        self.log(f"      Hospitalización Total = {' + '.join(hosp_cols)}")
+        self.log(f"      Consulta Externa Total = {' + '.join(cons_cols)}")
+        self.log(f"      Emergencia = {' + '.join(emerg_cols)}")
         
-        if 'Emergencia' not in summary_table.columns:
-            summary_table['Emergencia'] = 0
+        # Calcular columnas combinadas
+        summary_table['Hospitalización Total'] = sum(safe_get_col(summary_table, col) for col in hosp_cols)
+        summary_table['Consulta Externa Total'] = sum(safe_get_col(summary_table, col) for col in cons_cols)
+        summary_table['Emergencia'] = sum(safe_get_col(summary_table, col) for col in emerg_cols)
         
         # Totales
         total_cols = list(set(
