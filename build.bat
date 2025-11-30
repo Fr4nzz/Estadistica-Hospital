@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo   Building Estadistica Hospital v3.6
+echo   Building Estadistica Hospital v3.6.1
 echo ========================================
 echo.
 

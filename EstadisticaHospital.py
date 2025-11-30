@@ -159,7 +159,7 @@ CATEGORY_ORDER = [
 class EstadisticaHospitalApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Estadística Hospital v3.6")
+        self.root.title("Estadística Hospital v3.6.1")
         self.root.geometry("950x750")
         self.root.minsize(900, 650)
         
@@ -1627,19 +1627,20 @@ class EstadisticaHospitalApp:
                             except Exception as e:
                                 self.log(f"   ⚠️ Error seleccionando dropdown: {e}")
                         
+                        # SIEMPRE hacer clic en "Generar informe" para refrescar datos con la nueva fecha
+                        generar_btn = page.query_selector("button:has-text('Generar informe')")
+                        if generar_btn:
+                            generar_btn.click()
+                            # Esperar a que aparezca el enlace Excel (indica que los datos se cargaron)
+                            try:
+                                page.wait_for_selector("a:has-text('Excel')", timeout=10000)
+                            except:
+                                pass
+                            # Pequeña espera adicional para asegurar que los datos estén listos
+                            time.sleep(0.5)
+                        
                         # Buscar Excel link
                         excel_link = page.query_selector("a:has-text('Excel'):visible")
-                        
-                        if not excel_link:
-                            generar_btn = page.query_selector("button:has-text('Generar informe')")
-                            if generar_btn:
-                                generar_btn.click()
-                                try:
-                                    page.wait_for_selector("a:has-text('Excel')", timeout=2000)
-                                except:
-                                    pass
-                            
-                            excel_link = page.query_selector("a:has-text('Excel')")
                         
                         if not excel_link:
                             excel_link = page.query_selector(".dropdown-menu >> text=Excel")
