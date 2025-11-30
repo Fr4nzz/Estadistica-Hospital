@@ -44,6 +44,7 @@ except ImportError:
 DEFAULT_CONFIG = {
     "General": {
         "URL": "https://hjmvi.orion-labs.com/informes/estadisticos",
+        "URLCatalogo": "https://hjmvi.orion-labs.com/informes/catalogos",
         "TiempoEspera": "0",
         "TiempoCargaPagina": "5",
         "TimeoutDescarga": "15",
@@ -55,9 +56,15 @@ DEFAULT_CONFIG = {
         "IdFechaDesde": "fecha-orden-desde",
         "IdFechaHasta": "fecha-orden-hasta"
     },
+    "Catalogo": {
+        "IdDropdownTipo": "tipo",
+        "ValorExamenes": "EXAMENES",
+        "IdBotonGenerar": "generar-informe-auditorias"
+    },
     "Archivos": {
         "CarpetaDescargas": "./ExcelsDescargados",
-        "ArchivoSalida": "./Estadistica Hospital.xlsx"
+        "ArchivoSalida": "./Estadistica Hospital.xlsx",
+        "ArchivoCatalogo": "./catalogo_examenes.json"
     }
 }
 
@@ -132,6 +139,7 @@ class EstadisticaHospitalApp:
         # Cargar configuraciones
         self.config = self.load_config()
         self.exam_config = self.load_exam_config()
+        self.exam_catalog = self.load_exam_catalog()
         
         # Variables de control
         self.should_stop = False
@@ -187,6 +195,29 @@ class EstadisticaHospitalApp:
         config_file = self.base_dir / "config_examenes.json"
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(self.exam_config, f, indent=2, ensure_ascii=False)
+    
+    def load_exam_catalog(self) -> dict:
+        """Carga el catálogo de exámenes"""
+        catalog_file = self.base_dir / self.config.get("Archivos", "ArchivoCatalogo", fallback="catalogo_examenes.json")
+        
+        if catalog_file.exists():
+            try:
+                with open(catalog_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        
+        return {"examenes": [], "ultima_actualizacion": None}
+    
+    def save_exam_catalog(self, examenes: list):
+        """Guarda el catálogo de exámenes"""
+        catalog_file = self.base_dir / self.config.get("Archivos", "ArchivoCatalogo", fallback="catalogo_examenes.json")
+        catalog = {
+            "examenes": examenes,
+            "ultima_actualizacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(catalog_file, 'w', encoding='utf-8') as f:
+            json.dump(catalog, f, indent=2, ensure_ascii=False)
     
     def create_notebook(self):
         """Crea el notebook con pestañas"""
@@ -372,24 +403,60 @@ class EstadisticaHospitalApp:
         # Cargar datos
         self.refresh_multipliers_list()
         
-        # Frame de edición
-        edit_frame = ttk.Frame(self.exams_frame)
+        # Frame de edición con búsqueda
+        edit_frame = ttk.LabelFrame(self.exams_frame, text="Agregar Multiplicador", padding=10)
         edit_frame.pack(fill="x", padx=10, pady=5)
         
-        ttk.Label(edit_frame, text="Examen:").pack(side="left", padx=5)
+        # Combobox con búsqueda
+        ttk.Label(edit_frame, text="Examen:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         self.new_exam_var = tk.StringVar()
-        ttk.Entry(edit_frame, textvariable=self.new_exam_var, width=40).pack(side="left", padx=5)
+        self.exam_combobox = ttk.Combobox(edit_frame, textvariable=self.new_exam_var, width=50)
+        self.exam_combobox.grid(row=0, column=1, sticky="w", padx=5, pady=2)
         
-        ttk.Label(edit_frame, text="Multiplicador:").pack(side="left", padx=5)
+        # Poblar combobox con catálogo
+        self.update_exam_combobox()
+        
+        # Bind para búsqueda fuzzy
+        self.exam_combobox.bind('<KeyRelease>', self.filter_exam_combobox)
+        
+        ttk.Label(edit_frame, text="Multiplicador:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
         self.new_mult_var = tk.StringVar(value="1")
-        ttk.Entry(edit_frame, textvariable=self.new_mult_var, width=10).pack(side="left", padx=5)
+        ttk.Entry(edit_frame, textvariable=self.new_mult_var, width=10).grid(row=1, column=1, sticky="w", padx=5, pady=2)
         
-        ttk.Button(edit_frame, text="➕ Agregar", command=self.add_multiplier).pack(side="left", padx=5)
-        ttk.Button(edit_frame, text="🗑️ Eliminar", command=self.delete_multiplier).pack(side="left", padx=5)
+        # Botones
+        btn_frame = ttk.Frame(edit_frame)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=5)
         
-        # Botón guardar
-        ttk.Button(self.exams_frame, text="💾 Guardar Multiplicadores", 
-                  command=self.save_multipliers).pack(pady=10)
+        ttk.Button(btn_frame, text="➕ Agregar", command=self.add_multiplier).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="🗑️ Eliminar Seleccionado", command=self.delete_multiplier).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="💾 Guardar Multiplicadores", command=self.save_multipliers).pack(side="left", padx=5)
+    
+    def update_exam_combobox(self):
+        """Actualiza el combobox con la lista de exámenes del catálogo"""
+        examenes = self.exam_catalog.get("examenes", [])
+        self.exam_combobox['values'] = examenes
+    
+    def filter_exam_combobox(self, event):
+        """Filtra el combobox con búsqueda fuzzy"""
+        typed = self.new_exam_var.get().upper()
+        if not typed:
+            self.update_exam_combobox()
+            return
+        
+        examenes = self.exam_catalog.get("examenes", [])
+        # Filtro fuzzy: buscar exámenes que contengan las palabras escritas
+        words = typed.split()
+        filtered = []
+        for exam in examenes:
+            exam_upper = exam.upper()
+            if all(word in exam_upper for word in words):
+                filtered.append(exam)
+        
+        self.exam_combobox['values'] = filtered[:20]  # Limitar a 20 resultados
+        
+        # Mostrar dropdown si hay resultados
+        if filtered and len(typed) >= 2:
+            self.exam_combobox.event_generate('<Down>')
     
     def create_categories_tab(self):
         """Crea la pestaña de categorías"""
@@ -471,26 +538,32 @@ class EstadisticaHospitalApp:
     
     def create_uncategorized_list(self, parent):
         """Crea la lista de exámenes sin categorizar"""
-        info_label = ttk.Label(parent, text="Exámenes encontrados en los archivos descargados que no tienen categoría asignada.\n"
-                              "Haga clic en 'Escanear' para analizar los archivos descargados.")
+        info_label = ttk.Label(parent, text="Exámenes del catálogo que no tienen categoría asignada.\n"
+                              "Actualice el catálogo para obtener la lista completa de exámenes del sistema.")
         info_label.pack(padx=10, pady=5, anchor="w")
         
-        # Botón escanear
-        scan_frame = ttk.Frame(parent)
-        scan_frame.pack(fill="x", padx=10, pady=5)
+        # Frame de actualización
+        update_frame = ttk.Frame(parent)
+        update_frame.pack(fill="x", padx=10, pady=5)
         
-        ttk.Button(scan_frame, text="🔍 Escanear Archivos Descargados", 
-                  command=self.scan_uncategorized).pack(side="left", padx=5)
+        ttk.Button(update_frame, text="🔄 Actualizar Catálogo de Exámenes", 
+                  command=self.update_exam_catalog).pack(side="left", padx=5)
+        
+        # Última actualización
+        self.last_update_var = tk.StringVar()
+        self.update_last_update_label()
+        ttk.Label(update_frame, textvariable=self.last_update_var, 
+                 font=("", 9, "italic")).pack(side="left", padx=20)
+        
+        # Botón para mostrar sin categorizar
+        ttk.Button(update_frame, text="🔍 Mostrar Sin Categorizar", 
+                  command=self.show_uncategorized).pack(side="left", padx=5)
         
         # Treeview
-        columns = ("exam", "section", "count")
-        self.uncat_tree = ttk.Treeview(parent, columns=columns, show="headings", height=10)
-        self.uncat_tree.heading("exam", text="Examen")
-        self.uncat_tree.heading("section", text="Sección")
-        self.uncat_tree.heading("count", text="Cantidad")
-        self.uncat_tree.column("exam", width=300)
-        self.uncat_tree.column("section", width=150)
-        self.uncat_tree.column("count", width=80)
+        columns = ("exam",)
+        self.uncat_tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
+        self.uncat_tree.heading("exam", text="Examen Sin Categorizar")
+        self.uncat_tree.column("exam", width=500)
         
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.uncat_tree.yview)
         self.uncat_tree.configure(yscrollcommand=scrollbar.set)
@@ -509,8 +582,161 @@ class EstadisticaHospitalApp:
         
         ttk.Button(add_frame, text="➕ Agregar a Categorías por Examen", 
                   command=self.add_uncategorized_to_exam).pack(side="left", padx=5)
-        ttk.Button(add_frame, text="➕ Agregar a Categorías por Sección", 
-                  command=self.add_uncategorized_to_section).pack(side="left", padx=5)
+    
+    def update_last_update_label(self):
+        """Actualiza la etiqueta de última actualización"""
+        ultima = self.exam_catalog.get("ultima_actualizacion")
+        if ultima:
+            self.last_update_var.set(f"Última actualización: {ultima}")
+        else:
+            self.last_update_var.set("Catálogo no descargado")
+    
+    def show_uncategorized(self):
+        """Muestra los exámenes sin categorizar"""
+        # Limpiar lista
+        for item in self.uncat_tree.get_children():
+            self.uncat_tree.delete(item)
+        
+        examenes = self.exam_catalog.get("examenes", [])
+        if not examenes:
+            messagebox.showinfo("Info", "No hay exámenes en el catálogo.\nHaga clic en 'Actualizar Catálogo de Exámenes' primero.")
+            return
+        
+        # Obtener categorías configuradas
+        exam_categories = self.exam_config.get("exam_categories", {})
+        seccion_categories = self.exam_config.get("seccion_categories", {})
+        
+        # Encontrar sin categorizar
+        uncategorized = []
+        for exam in examenes:
+            if exam not in exam_categories:
+                uncategorized.append(exam)
+        
+        # Agregar a la lista
+        for exam in uncategorized:
+            self.uncat_tree.insert("", "end", values=(exam,))
+        
+        if not uncategorized:
+            messagebox.showinfo("Completo", f"Todos los {len(examenes)} exámenes tienen categoría asignada")
+        else:
+            messagebox.showinfo("Resultado", f"Se encontraron {len(uncategorized)} exámenes sin categorizar de {len(examenes)} totales")
+    
+    def update_exam_catalog(self):
+        """Descarga el catálogo de exámenes del sistema"""
+        # Ejecutar en hilo separado
+        thread = threading.Thread(target=self._download_exam_catalog)
+        thread.daemon = True
+        thread.start()
+    
+    def _download_exam_catalog(self):
+        """Descarga el catálogo de exámenes (ejecutar en hilo)"""
+        try:
+            url = self.config.get("General", "URLCatalogo", fallback="https://hjmvi.orion-labs.com/informes/catalogos")
+            dropdown_id = self.config.get("Catalogo", "IdDropdownTipo", fallback="tipo")
+            dropdown_value = self.config.get("Catalogo", "ValorExamenes", fallback="EXAMENES")
+            button_id = self.config.get("Catalogo", "IdBotonGenerar", fallback="generar-informe-auditorias")
+            
+            browser_data_folder = self.base_dir / "browser_data"
+            browser_data_folder.mkdir(exist_ok=True)
+            
+            downloads_folder = self.base_dir / self.config.get("Archivos", "CarpetaDescargas")
+            downloads_folder.mkdir(exist_ok=True)
+            
+            self.root.after(0, lambda: messagebox.showinfo("Descargando", 
+                "Descargando catálogo de exámenes...\nSe abrirá una ventana del navegador.\nEspere a que se complete la descarga."))
+            
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(browser_data_folder),
+                    headless=False,
+                    channel="chrome",
+                    accept_downloads=True
+                )
+                
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(url, timeout=60000)
+                
+                # Esperar a que cargue
+                page.wait_for_load_state("networkidle", timeout=10000)
+                
+                # Verificar login
+                max_wait = 120
+                waited = 0
+                while waited < max_wait:
+                    try:
+                        dropdown = page.query_selector(f"#{dropdown_id}")
+                        if dropdown:
+                            break
+                    except:
+                        pass
+                    time.sleep(2)
+                    waited += 2
+                
+                if waited >= max_wait:
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Timeout esperando la página"))
+                    context.close()
+                    return
+                
+                # Seleccionar "Exámenes" en el dropdown
+                dropdown = page.query_selector(f"#{dropdown_id}")
+                if dropdown:
+                    dropdown.select_option(value=dropdown_value)
+                    time.sleep(1)
+                
+                # Hacer clic en Generar informe
+                with page.expect_download(timeout=30000) as download_info:
+                    generar_btn = page.query_selector(f"#{button_id}")
+                    if generar_btn:
+                        generar_btn.click()
+                    else:
+                        # Intentar por texto
+                        page.click("button:has-text('Generar informe')")
+                
+                download = download_info.value
+                temp_path = downloads_folder / "catalogo_temp.xlsx"
+                download.save_as(temp_path)
+                
+                context.close()
+            
+            # Leer el archivo Excel y extraer exámenes
+            df = pd.read_excel(temp_path, skiprows=3)  # Saltar las primeras filas de encabezado
+            
+            # Buscar la columna de exámenes
+            exam_col = None
+            for col in df.columns:
+                if 'examen' in col.lower():
+                    exam_col = col
+                    break
+            
+            if exam_col is None:
+                # Usar la primera columna
+                exam_col = df.columns[0]
+            
+            # Extraer exámenes únicos
+            examenes = df[exam_col].dropna().astype(str).tolist()
+            examenes = [e.strip() for e in examenes if e.strip() and not e.startswith('Hospital') and not e.startswith('Generado')]
+            examenes = list(set(examenes))  # Únicos
+            examenes.sort()
+            
+            # Guardar catálogo
+            self.save_exam_catalog(examenes)
+            self.exam_catalog = self.load_exam_catalog()
+            
+            # Actualizar UI
+            self.root.after(0, self.update_last_update_label)
+            self.root.after(0, self.update_exam_combobox)
+            
+            # Eliminar archivo temporal
+            try:
+                temp_path.unlink()
+            except:
+                pass
+            
+            self.root.after(0, lambda: messagebox.showinfo("Completado", 
+                f"Catálogo actualizado con {len(examenes)} exámenes"))
+            
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Error descargando catálogo: {str(e)}"))
     
     # ============================================
     # FUNCIONES DE CONFIGURACIÓN
@@ -645,70 +871,6 @@ class EstadisticaHospitalApp:
         self.save_exam_config()
         messagebox.showinfo("Guardado", "Categorías guardadas correctamente")
     
-    def scan_uncategorized(self):
-        """Escanea los archivos descargados para encontrar exámenes sin categorizar"""
-        downloads_folder = self.base_dir / self.config.get("Archivos", "CarpetaDescargas")
-        
-        if not downloads_folder.exists():
-            messagebox.showwarning("Aviso", "No existe la carpeta de descargas")
-            return
-        
-        # Limpiar lista
-        for item in self.uncat_tree.get_children():
-            self.uncat_tree.delete(item)
-        
-        # Leer archivos
-        xlsx_files = list(downloads_folder.glob('*.xlsx'))
-        if not xlsx_files:
-            messagebox.showinfo("Info", "No hay archivos Excel en la carpeta de descargas")
-            return
-        
-        exam_counts = {}
-        exam_sections = {}
-        
-        for filepath in xlsx_files:
-            try:
-                df = pd.read_excel(filepath, skiprows=4)
-                for _, row in df.iterrows():
-                    exam = row.get('Examen', '')
-                    section = row.get('Sección', row.get('Seccion', ''))
-                    
-                    if pd.isna(exam) or not exam or str(exam).startswith('Total'):
-                        continue
-                    
-                    exam_counts[exam] = exam_counts.get(exam, 0) + 1
-                    exam_sections[exam] = section
-            except:
-                continue
-        
-        # Filtrar los que no tienen categoría
-        exam_categories = self.exam_config.get("exam_categories", {})
-        seccion_categories = self.exam_config.get("seccion_categories", {})
-        
-        uncategorized = []
-        for exam, count in exam_counts.items():
-            section = exam_sections.get(exam, '')
-            
-            # Verificar si tiene categoría
-            if exam in exam_categories:
-                continue
-            if section in seccion_categories:
-                continue
-            
-            uncategorized.append((exam, section, count))
-        
-        # Ordenar por cantidad descendente
-        uncategorized.sort(key=lambda x: x[2], reverse=True)
-        
-        # Agregar a la lista
-        for exam, section, count in uncategorized:
-            self.uncat_tree.insert("", "end", values=(exam, section, count))
-        
-        if not uncategorized:
-            messagebox.showinfo("Completo", "Todos los exámenes tienen categoría asignada")
-        else:
-            messagebox.showinfo("Resultado", f"Se encontraron {len(uncategorized)} exámenes sin categorizar")
-    
     def add_uncategorized_to_exam(self):
         """Agrega el examen sin categorizar a categorías por examen"""
         selected = self.uncat_tree.selection()
@@ -734,45 +896,6 @@ class EstadisticaHospitalApp:
         self.uncat_tree.delete(selected[0])
         
         messagebox.showinfo("Agregado", f"'{exam}' agregado a categoría '{cat}'")
-    
-    def add_uncategorized_to_section(self):
-        """Agrega la sección sin categorizar a categorías por sección"""
-        selected = self.uncat_tree.selection()
-        if not selected:
-            messagebox.showwarning("Aviso", "Seleccione un examen")
-            return
-        
-        cat = self.uncat_category_var.get()
-        if not cat:
-            messagebox.showwarning("Aviso", "Seleccione una categoría")
-            return
-        
-        section = self.uncat_tree.item(selected[0])['values'][1]
-        
-        if not section:
-            messagebox.showwarning("Aviso", "Este examen no tiene sección definida")
-            return
-        
-        if "seccion_categories" not in self.exam_config:
-            self.exam_config["seccion_categories"] = {}
-        
-        self.exam_config["seccion_categories"][section] = cat
-        self.save_exam_config()
-        
-        # Actualizar lista de secciones
-        self.section_cat_tree.insert("", "end", values=(section, cat))
-        
-        # Remover todos los exámenes de esa sección de la lista de sin categorizar
-        to_remove = []
-        for item in self.uncat_tree.get_children():
-            item_section = self.uncat_tree.item(item)['values'][1]
-            if item_section == section:
-                to_remove.append(item)
-        
-        for item in to_remove:
-            self.uncat_tree.delete(item)
-        
-        messagebox.showinfo("Agregado", f"Sección '{section}' agregada a categoría '{cat}'")
     
     # ============================================
     # FUNCIONES DE CONTROL DE PROCESO
